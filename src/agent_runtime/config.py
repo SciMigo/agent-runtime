@@ -1,0 +1,71 @@
+"""Configuration management for Agent Runtime."""
+
+import os
+from pathlib import Path
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def get_runtime_dir() -> Path:
+    """Get the runtime data directory."""
+    # Use XDG_DATA_HOME on Linux, or ~/.agent-runtime elsewhere
+    if os.name == "posix":
+        xdg_data = os.environ.get("XDG_DATA_HOME")
+        if xdg_data:
+            return Path(xdg_data) / "agent-runtime"
+    return Path.home() / ".agent-runtime"
+
+
+class Settings(BaseSettings):
+    """Runtime settings with environment variable support."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="AGENT_RUNTIME_",
+        env_file=".env",
+        extra="ignore",
+    )
+
+    # Server settings
+    host: str = "127.0.0.1"
+    port: int = 9477
+    debug: bool = False
+
+    # Runtime data directory
+    runtime_dir: Path = Field(default_factory=get_runtime_dir)
+
+    # Auth settings
+    require_pairing: bool = True
+    pairing_timeout: int = 300  # seconds to wait for pairing approval
+
+    # Kernel settings
+    default_kernel_timeout: int = 60  # seconds
+    max_kernels_per_lab: int = 1
+    kernel_idle_timeout: int = 3600  # 1 hour
+
+    # Environment settings
+    python_version: str | None = None  # Use system Python if not specified
+
+    @property
+    def envs_dir(self) -> Path:
+        """Directory for virtual environments."""
+        return self.runtime_dir / "envs"
+
+    @property
+    def config_file(self) -> Path:
+        """Path to the config file."""
+        return self.runtime_dir / "config.toml"
+
+    @property
+    def paired_origins_file(self) -> Path:
+        """Path to the paired origins file."""
+        return self.runtime_dir / "paired_origins.json"
+
+    def ensure_dirs(self) -> None:
+        """Ensure all required directories exist."""
+        self.runtime_dir.mkdir(parents=True, exist_ok=True)
+        self.envs_dir.mkdir(parents=True, exist_ok=True)
+
+
+# Global settings instance
+settings = Settings()

@@ -1,0 +1,33 @@
+# Agent Runtime Configuration
+# Copy to ~/.agent-runtime/config.toml to customize
+
+[server]
+# Host to bind to (use 127.0.0.1 for localhost only)
+host = "127.0.0.1"
+
+# Port to listen on
+port = 9477
+
+# Enable debug mode (auto-reload, verbose logging)
+debug = false
+
+[auth]
+# Require pairing approval for new origins
+require_pairing = true
+
+# Timeout for pairing approval (seconds)
+pairing_timeout = 300
+
+[kernel]
+# Default timeout for kernel startup (seconds)
+default_kernel_timeout = 60
+
+# Maximum kernels per lab
+max_kernels_per_lab = 1
+
+# Idle timeout before kernel is shut down (seconds)
+kernel_idle_timeout = 3600
+
+[environment]
+# Python version to use for new environments (null = system Python)
+# python_version = "3.11"
