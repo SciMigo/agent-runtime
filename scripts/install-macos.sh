@@ -8,20 +8,35 @@
 # Or download and run:
 #   ./install-macos.sh
 #
+# Installs the latest code from GitHub into its own environment and puts the
+# `agent-runtime` command in ~/.local/bin. Re-running the script upgrades it.
+#
+# Set AGENT_RUNTIME_SOURCE to install from somewhere else, e.g. a local
+# checkout or another branch's archive URL.
+#
+# Note: "agent-runtime" on PyPI is an unrelated placeholder package, so this
+# script never installs from PyPI.
+#
 
 set -e
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# Colors for output ($'...' stores the real ESC byte, so they work with plain echo too).
+# Disabled when stdout is not a terminal or NO_COLOR is set.
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+    RED=$'\033[0;31m'
+    GREEN=$'\033[0;32m'
+    YELLOW=$'\033[1;33m'
+    BLUE=$'\033[0;34m'
+    NC=$'\033[0m' # No Color
+else
+    RED='' GREEN='' YELLOW='' BLUE='' NC=''
+fi
 
 # Configuration
 REPO_URL="https://github.com/SciMigo/agent-runtime"
+SOURCE="${AGENT_RUNTIME_SOURCE:-$REPO_URL/archive/refs/heads/main.tar.gz}"
 INSTALL_DIR="$HOME/.local/bin"
-RUNTIME_DIR="$HOME/.agent-runtime"
+VENV_DIR="$HOME/.agent-runtime/venv"
 MIN_PYTHON_VERSION="3.11"
 
 echo -e "${BLUE}"
@@ -38,148 +53,132 @@ if [[ "$(uname)" != "Darwin" ]]; then
     exit 1
 fi
 
-# Check for Python
+# Prefer uv; otherwise fall back to a venv created with a local Python
+check_installer() {
+    echo -e "${BLUE}Checking for uv...${NC}"
+
+    if command -v uv &> /dev/null; then
+        INSTALLER="uv"
+        echo -e "${GREEN}✓ Found uv${NC}"
+    else
+        INSTALLER="venv"
+        echo -e "${YELLOW}! uv not found, using Python venv + pip instead${NC}"
+        echo "  (uv is faster: curl -LsSf https://astral.sh/uv/install.sh | sh)"
+        check_python
+    fi
+}
+
+# Find a Python that meets MIN_PYTHON_VERSION (only needed without uv)
 check_python() {
     echo -e "${BLUE}Checking Python installation...${NC}"
 
-    # Try python3 first, then python
-    if command -v python3 &> /dev/null; then
-        PYTHON_CMD="python3"
-    elif command -v python &> /dev/null; then
-        PYTHON_CMD="python"
-    else
-        echo -e "${RED}Error: Python not found.${NC}"
-        echo ""
-        echo "Please install Python $MIN_PYTHON_VERSION or later:"
-        echo "  brew install python@3.11"
-        echo "  # or"
-        echo "  https://www.python.org/downloads/"
-        exit 1
-    fi
-
-    # Check version
-    PYTHON_VERSION=$($PYTHON_CMD -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
     REQUIRED_MAJOR=$(echo $MIN_PYTHON_VERSION | cut -d. -f1)
     REQUIRED_MINOR=$(echo $MIN_PYTHON_VERSION | cut -d. -f2)
-    ACTUAL_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
-    ACTUAL_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
 
-    if [[ $ACTUAL_MAJOR -lt $REQUIRED_MAJOR ]] || [[ $ACTUAL_MAJOR -eq $REQUIRED_MAJOR && $ACTUAL_MINOR -lt $REQUIRED_MINOR ]]; then
-        echo -e "${RED}Error: Python $MIN_PYTHON_VERSION or later required (found $PYTHON_VERSION)${NC}"
-        exit 1
-    fi
+    # python3 may be an older system Python, so also try versioned names
+    for cmd in python3 python3.14 python3.13 python3.12 python3.11; do
+        command -v "$cmd" &> /dev/null || continue
 
-    echo -e "${GREEN}✓ Found Python $PYTHON_VERSION${NC}"
-}
+        PYTHON_VERSION=$("$cmd" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null) || continue
+        ACTUAL_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
+        ACTUAL_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
 
-# Check for uv (recommended) or pip
-check_package_manager() {
-    echo -e "${BLUE}Checking package manager...${NC}"
+        if [[ $ACTUAL_MAJOR -gt $REQUIRED_MAJOR ]] || [[ $ACTUAL_MAJOR -eq $REQUIRED_MAJOR && $ACTUAL_MINOR -ge $REQUIRED_MINOR ]]; then
+            PYTHON_CMD="$cmd"
+            echo -e "${GREEN}✓ Found Python $PYTHON_VERSION ($PYTHON_CMD)${NC}"
+            return
+        fi
+    done
 
-    if command -v uv &> /dev/null; then
-        PKG_MANAGER="uv"
-        echo -e "${GREEN}✓ Found uv (recommended)${NC}"
-    elif command -v pip3 &> /dev/null; then
-        PKG_MANAGER="pip3"
-        echo -e "${YELLOW}! Using pip3 (uv recommended for faster installs)${NC}"
-        echo "  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh"
-    elif command -v pip &> /dev/null; then
-        PKG_MANAGER="pip"
-        echo -e "${YELLOW}! Using pip (uv recommended for faster installs)${NC}"
-    else
-        echo -e "${RED}Error: No package manager found. Please install pip or uv.${NC}"
-        exit 1
-    fi
-}
-
-# Create installation directory
-setup_dirs() {
-    echo -e "${BLUE}Setting up directories...${NC}"
-
-    mkdir -p "$INSTALL_DIR"
-    mkdir -p "$RUNTIME_DIR"
-
-    echo -e "${GREEN}✓ Created $RUNTIME_DIR${NC}"
+    echo -e "${RED}Error: Python $MIN_PYTHON_VERSION or later not found.${NC}"
+    echo ""
+    echo "Install one of:"
+    echo "  curl -LsSf https://astral.sh/uv/install.sh | sh   # recommended, manages Python for you"
+    echo "  brew install python@3.12"
+    echo "  https://www.python.org/downloads/"
+    exit 1
 }
 
 # Install agent-runtime
 install_runtime() {
-    echo -e "${BLUE}Installing Agent Runtime...${NC}"
+    echo -e "${BLUE}Installing Agent Runtime from $SOURCE...${NC}"
 
-    if [[ "$PKG_MANAGER" == "uv" ]]; then
-        uv pip install --system agent-runtime
+    if [[ "$INSTALLER" == "uv" ]]; then
+        # --reinstall re-fetches the source, so re-running upgrades to the latest code
+        if ! uv tool install --force --reinstall --python ">=$MIN_PYTHON_VERSION" --from "$SOURCE" agent-runtime; then
+            echo -e "${RED}Error: Installation failed (see the uv output above).${NC}"
+            exit 1
+        fi
+        INSTALL_DIR=$(uv tool dir --bin)
     else
-        $PKG_MANAGER install agent-runtime
+        mkdir -p "$INSTALL_DIR" "$(dirname "$VENV_DIR")"
+        if ! { "$PYTHON_CMD" -m venv --clear "$VENV_DIR" &&
+               "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check "$SOURCE"; }; then
+            echo -e "${RED}Error: Installation failed (see the pip output above).${NC}"
+            exit 1
+        fi
+        ln -sf "$VENV_DIR/bin/agent-runtime" "$INSTALL_DIR/agent-runtime"
     fi
 
     echo -e "${GREEN}✓ Installed Agent Runtime${NC}"
 }
 
-# Install from git (for development or if package not published)
-install_from_git() {
-    echo -e "${BLUE}Installing Agent Runtime from source...${NC}"
-
-    TEMP_DIR=$(mktemp -d)
-    git clone --depth 1 "$REPO_URL.git" "$TEMP_DIR/agent-runtime"
-
-    cd "$TEMP_DIR/agent-runtime"
-
-    if [[ "$PKG_MANAGER" == "uv" ]]; then
-        uv pip install --system -e .
-    else
-        $PKG_MANAGER install -e .
-    fi
-
-    cd - > /dev/null
-    rm -rf "$TEMP_DIR"
-
-    echo -e "${GREEN}✓ Installed Agent Runtime from source${NC}"
-}
-
-# Add to PATH if needed
+# Add INSTALL_DIR to PATH if needed
 setup_path() {
     echo -e "${BLUE}Checking PATH...${NC}"
 
-    # Check if agent-runtime is in PATH
-    if command -v agent-runtime &> /dev/null; then
-        echo -e "${GREEN}✓ agent-runtime is in PATH${NC}"
-        return
-    fi
-
-    # Determine shell config file
-    SHELL_NAME=$(basename "$SHELL")
-    case "$SHELL_NAME" in
-        bash)
-            SHELL_RC="$HOME/.bashrc"
-            ;;
-        zsh)
-            SHELL_RC="$HOME/.zshrc"
-            ;;
-        *)
-            SHELL_RC=""
+    case ":$PATH:" in
+        *":$INSTALL_DIR:"*)
+            echo -e "${GREEN}✓ $INSTALL_DIR is in PATH${NC}"
+            return
             ;;
     esac
 
-    if [[ -n "$SHELL_RC" ]]; then
-        echo "" >> "$SHELL_RC"
-        echo "# Agent Runtime" >> "$SHELL_RC"
-        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_RC"
-        echo -e "${YELLOW}! Added $HOME/.local/bin to PATH in $SHELL_RC${NC}"
-        echo "  Run: source $SHELL_RC"
+    # Terminal.app opens login shells, so bash reads .bash_profile rather than .bashrc
+    case "$(basename "$SHELL")" in
+        zsh)  SHELL_RC="$HOME/.zshrc" ;;
+        bash) SHELL_RC="$HOME/.bash_profile" ;;
+        *)    SHELL_RC="" ;;
+    esac
+
+    if [[ -z "$SHELL_RC" ]]; then
+        echo -e "${YELLOW}! Add $INSTALL_DIR to your PATH to use agent-runtime${NC}"
+        RELOAD_HINT="export PATH=\"$INSTALL_DIR:\$PATH\""
+        return
     fi
+
+    # Write paths under $HOME as "$HOME/..." to match what most rc files use
+    if [[ "$INSTALL_DIR" == "$HOME"/* ]]; then
+        RC_DIR="\$HOME${INSTALL_DIR#"$HOME"}"
+    else
+        RC_DIR="$INSTALL_DIR"
+    fi
+    PATH_LINE="export PATH=\"$RC_DIR:\$PATH\""
+
+    if grep -qsF "$PATH_LINE" "$SHELL_RC"; then
+        echo -e "${GREEN}✓ $SHELL_RC already adds $INSTALL_DIR to PATH${NC}"
+    else
+        {
+            echo ""
+            echo "# Agent Runtime"
+            echo "$PATH_LINE"
+        } >> "$SHELL_RC"
+        echo -e "${YELLOW}! Added $INSTALL_DIR to PATH in $SHELL_RC${NC}"
+    fi
+    RELOAD_HINT="source $SHELL_RC"
 }
 
 # Verify installation
 verify_install() {
     echo -e "${BLUE}Verifying installation...${NC}"
 
-    # Try to import the package
-    $PYTHON_CMD -c "import agent_runtime; print(f'Version: {agent_runtime.__version__}')" 2>/dev/null || {
-        echo -e "${RED}Warning: Could not verify installation${NC}"
-        return
-    }
+    if ! VERSION_OUTPUT=$("$INSTALL_DIR/agent-runtime" --version 2>&1); then
+        echo -e "${RED}Error: agent-runtime was installed but failed to run:${NC}"
+        echo "$VERSION_OUTPUT"
+        exit 1
+    fi
 
-    echo -e "${GREEN}✓ Installation verified${NC}"
+    echo -e "${GREEN}✓ $VERSION_OUTPUT${NC}"
 }
 
 # Print success message
@@ -189,6 +188,11 @@ print_success() {
     echo -e "${GREEN}║     Agent Runtime installed successfully! ║${NC}"
     echo -e "${GREEN}╚═══════════════════════════════════════════╝${NC}"
     echo ""
+    if [[ -n "$RELOAD_HINT" ]]; then
+        echo -e "${YELLOW}First, open a new terminal window or run:${NC}"
+        echo "  ${BLUE}$RELOAD_HINT${NC}"
+        echo ""
+    fi
     echo "Quick start:"
     echo "  ${BLUE}agent-runtime serve${NC}              # Start the runtime"
     echo "  ${BLUE}agent-runtime serve --no-pairing${NC} # Start without pairing (dev mode)"
@@ -202,13 +206,8 @@ print_success() {
 
 # Main installation flow
 main() {
-    check_python
-    check_package_manager
-    setup_dirs
-
-    # Try to install from PyPI first, fall back to git
-    install_runtime 2>/dev/null || install_from_git
-
+    check_installer
+    install_runtime
     setup_path
     verify_install
     print_success
