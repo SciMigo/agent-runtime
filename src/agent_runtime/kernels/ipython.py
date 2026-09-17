@@ -49,6 +49,7 @@ class IPythonKernel:
         self._km: AsyncKernelManager | None = None
         self._kc: AsyncKernelClient | None = None
         self._ready = False
+        self._execution_lock = asyncio.Lock()
 
     @property
     def is_ready(self) -> bool:
@@ -72,10 +73,10 @@ class IPythonKernel:
 
         # Wait for kernel to be ready
         try:
-            await asyncio.wait_for(
-                self._wait_for_ready(),
-                timeout=30.0,
-            )
+            # The client must receive an IOPub message before we execute cells.
+            # A shell-only kernel_info reply can arrive before its SUB socket is
+            # subscribed, losing the first cell's output or idle notification.
+            await asyncio.wait_for(self._kc.wait_for_ready(timeout=30.0), timeout=35.0)
             self._ready = True
 
             emit_event(
@@ -89,29 +90,6 @@ class IPythonKernel:
             await self.shutdown()
             raise RuntimeError(f"Kernel {self.kernel_name} failed to start within timeout")
 
-    async def _wait_for_ready(self) -> None:
-        """Wait for kernel to be ready."""
-        if self._kc is None:
-            return
-
-        # Request kernel info
-        self._kc.kernel_info()
-
-        while True:
-            try:
-                # Use the async method directly
-                msg = await asyncio.wait_for(
-                    self._kc.get_shell_msg(),
-                    timeout=5.0,
-                )
-                if msg["msg_type"] == "kernel_info_reply":
-                    return
-            except TimeoutError:
-                # Send another kernel info request
-                self._kc.kernel_info()
-            except Exception:
-                await asyncio.sleep(0.1)
-
     async def execute(
         self,
         code: str,
@@ -122,6 +100,15 @@ class IPythonKernel:
 
         For streaming output, use execute_stream instead.
         """
+        async with self._execution_lock:
+            return await self._execute_unlocked(code, cell_id, silent)
+
+    async def _execute_unlocked(
+        self,
+        code: str,
+        cell_id: str | None,
+        silent: bool,
+    ) -> ExecutionResult:
         if not self.is_ready or self._kc is None:
             raise RuntimeError("Kernel is not ready")
 
@@ -261,6 +248,15 @@ class IPythonKernel:
         cell_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Execute code and stream outputs as they arrive."""
+        async with self._execution_lock:
+            async for output in self._execute_stream_unlocked(code, cell_id):
+                yield output
+
+    async def _execute_stream_unlocked(
+        self,
+        code: str,
+        cell_id: str | None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
         if not self.is_ready or self._kc is None:
             raise RuntimeError("Kernel is not ready")
 
@@ -354,10 +350,9 @@ class IPythonKernel:
         self._ready = False
 
         # Wait for ready again
-        await asyncio.wait_for(
-            self._wait_for_ready(),
-            timeout=30.0,
-        )
+        if self._kc is None:
+            raise RuntimeError("Kernel client is not available after restart")
+        await asyncio.wait_for(self._kc.wait_for_ready(timeout=30.0), timeout=35.0)
         self._ready = True
 
         emit_event(
