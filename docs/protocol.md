@@ -288,7 +288,10 @@ steps = [["python", "demo.py", "--agent", "naive", "--model", "stable"]]
 ```
 
 Every step is an argv list. Steps run in order, and the first one that exits non-zero ends the
-action. Unknown keys are errors. Limits: 50 actions, 20 steps each, 100 arguments per step.
+action. Each step's output is followed by a line saying how it ended: `[done · 2.1 s]`,
+`[exit 3 · 0.4 s]`, `[stopped · 5.0 s]` or `[timed out · 1.0 s]`. Actions run with `FORCE_COLOR=1`
+and `CLICOLOR_FORCE=1` (unless already set), so output may contain ANSI color codes; a page showing it
+should render or strip them. Unknown keys are errors. Limits: 50 actions, 20 steps each, 100 arguments per step.
 
 ### Prepare a Lab
 

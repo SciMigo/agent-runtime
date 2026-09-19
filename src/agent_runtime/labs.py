@@ -506,6 +506,11 @@ class LabManager:
         env["PATH"] = f"{lab.bin_dir}{os.pathsep}{env.get('PATH', '')}"
         env["VIRTUAL_ENV"] = str(lab.bin_dir.parent)
         env["PYTHONUNBUFFERED"] = "1"
+        # Output goes to a pipe, not a terminal, so programs would print no colors. The page that
+        # started the action renders ANSI colors, so ask for them (FORCE_COLOR and CLICOLOR_FORCE
+        # are the common conventions); a learner's NO_COLOR, if set, still wins in most tools.
+        env.setdefault("FORCE_COLOR", "1")
+        env.setdefault("CLICOLOR_FORCE", "1")
         deadline = time.monotonic() + action.timeout
         watchdog = asyncio.create_task(self._watch(run, deadline))
         try:
