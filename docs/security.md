@@ -155,6 +155,28 @@ listener serves the same app as the HTTP one: pairing and bearer tokens apply
 unchanged. `agent-runtime tls remove` removes the trust setting, the keychain
 entry and the files.
 
+### 8. Pairing Scopes and Named Lab Actions
+
+A pairing is either `code` (any Python, through kernels) or `actions` (only `/labs`). A page
+that runs a lab's prepared commands should pair with `actions`. Then a compromised or malicious
+page holding the token can run only commands the user has already approved.
+
+An action runs only if:
+
+- the page named a repository over `https` (no `ssh`, `file` or `ext::` transports, via
+  `GIT_ALLOW_PROTOCOL`), without credentials, and a full commit SHA;
+- that commit's `lab.toml` declares the action. Commands are argv lists and never go through a
+  shell;
+- the user approved that origin, repository, commit and manifest, in the terminal, after seeing
+  every command;
+- no other action of the same lab is running. Actions have a timeout, and Stop kills the whole
+  process group.
+
+What approval does and does not mean: it pins **which** commands run and **which code** they
+run, down to the commit. It does not sandbox them. Approving `python demo.py` trusts
+`demo.py` at that commit, with your permissions, like cloning the repository and running it
+yourself. A new commit needs a new approval.
+
 ## Known Limitations
 
 ### 1. No Code Sandboxing
@@ -224,6 +246,9 @@ rm ~/.agent-runtime/paired_origins.json
 
 # Untrust and delete the loopback HTTPS certificate
 agent-runtime tls remove
+
+# Forget every approved lab version (the next prepare asks again)
+rm ~/.agent-runtime/labs/approvals.json
 ```
 
 ### Cleaning Up Environments

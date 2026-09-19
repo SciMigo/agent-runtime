@@ -7,7 +7,8 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from agent_runtime import __protocol_version__, __version__
-from agent_runtime.api import execute, health, kernel, pairing
+from agent_runtime import labs as lab_runtime
+from agent_runtime.api import execute, health, kernel, labs, pairing
 from agent_runtime.config import settings
 from agent_runtime.kernels.manager import kernel_manager
 
@@ -17,7 +18,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Manage application lifecycle."""
     # Startup
     yield
-    # Shutdown - cleanup all kernels
+    # Shutdown - stop running lab actions, then clean up all kernels
+    await lab_runtime.lab_manager.shutdown()
     await kernel_manager.shutdown_all()
 
 
@@ -57,6 +59,7 @@ app.include_router(health.router, tags=["health"])
 app.include_router(pairing.router, prefix="/pairing", tags=["pairing"])
 app.include_router(kernel.router, prefix="/kernel", tags=["kernel"])
 app.include_router(execute.router, tags=["execute"])
+app.include_router(labs.router, prefix="/labs", tags=["labs"])
 
 
 @app.get("/runtime/info")
@@ -65,7 +68,7 @@ async def runtime_info() -> dict[str, object]:
     return {
         "runtime_version": __version__,
         "protocol_version": __protocol_version__,
-        "capabilities": ["python", "jupyter", "local_fs"],
+        "capabilities": ["python", "jupyter", "local_fs", "lab_actions", "pairing_scopes"],
     }
 
 

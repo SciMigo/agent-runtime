@@ -21,7 +21,7 @@ def test_browser_pairing_returns_token_only_after_approval():
         )
 
     assert response.status_code == 200
-    assert response.json() == {"origin": "https://scimigo.com", "token": "token"}
+    assert response.json() == {"origin": "https://scimigo.com", "token": "token", "scope": "code"}
 
 
 def test_browser_pairing_rejects_missing_origin():

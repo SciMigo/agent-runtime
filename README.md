@@ -252,6 +252,21 @@ DELETE /kernel         - Shutdown the kernel
 POST /cell/run         - Execute code in the kernel
 ```
 
+### Lab Actions
+
+A lab repository can declare, in `lab.toml`, the commands a course page may run. The page pairs
+with the narrower `actions` scope, which cannot reach `/kernel` or `/cell`. The learner approves
+each lab version once, after seeing every command. See
+[docs/protocol.md](docs/protocol.md#lab-actions).
+
+```
+POST /labs/prepare             - Fetch a repo at a full commit SHA, read lab.toml, ask to approve
+POST /labs/runs                - Start a named action
+GET  /labs/runs/{id}?offset=N  - Status and output since N
+POST /labs/runs/{id}/stop      - Stop it (SIGINT, then SIGKILL)
+GET  /labs/runs                - This site's runs
+```
+
 ## Architecture
 
 ```

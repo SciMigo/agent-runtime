@@ -58,6 +58,44 @@ async function runCell(runtimeUrl, token, labId, code) {
 }
 ```
 
+## Lab pages: named actions instead of code
+
+A course page that only needs to run a lab's prepared commands should not hold a token that can
+run any Python. Pair with the `actions` scope and use `/labs`:
+
+1. Find the runtime (HTTPS first, as above) and pair with `{"scope": "actions"}`.
+2. `POST /labs/prepare` with the lab repository and the full commit SHA the page was built
+   against. The first time, the learner approves the lab in the runtime's terminal, which lists
+   every command. Later visits to the same version do not ask again.
+3. Show the returned actions as buttons. On click, `POST /labs/runs`, then poll
+   `GET /labs/runs/{id}?offset=` every half second, appending `output` and passing back
+   `next_offset`, until `status` is not `running`.
+4. A Stop button calls `POST /labs/runs/{id}/stop`. After a reload, `GET /labs/runs` finds a
+   run that is still going.
+
+```javascript
+async function labRequest(runtimeUrl, token, path, body) {
+  const response = await fetch(`${runtimeUrl}${path}`, {
+    method: body ? "POST" : "GET",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!response.ok) throw new Error((await response.json()).detail);
+  return response.json();
+}
+
+const lab = await labRequest(runtimeUrl, token, "/labs/prepare", { repo, commit });
+let run = await labRequest(runtimeUrl, token, "/labs/runs",
+  { lab_id: lab.lab_id, commit: lab.commit, action: "stable" });
+let offset = 0;
+while (run.status === "running") {
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  run = await labRequest(runtimeUrl, token, `/labs/runs/${run.run_id}?offset=${offset}`);
+  output.textContent += run.output;
+  offset = run.next_offset;
+}
+```
+
 ## Browser security behavior
 
 Measured on macOS, 2026-09-19, from an HTTPS page on a public origin:
