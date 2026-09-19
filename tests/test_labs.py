@@ -1,5 +1,6 @@
 """Tests for named lab actions (agent_runtime.labs, /labs) and pairing scopes."""
 
+import re
 import subprocess
 import sys
 import time
@@ -253,6 +254,7 @@ class TestRuns:
         assert done["status"] == "succeeded" and done["exit_code"] == 0
         assert done["output"].startswith("$ python -c")
         assert "hello from the lab\n" in done["output"]
+        assert re.search(r"\n\[done · \d+\.\d s\]\n$", done["output"]), done["output"]
         later = client.get(f"/labs/runs/{run['run_id']}", params={"offset": done["next_offset"]})
         assert later.json()["output"] == ""
 
@@ -261,6 +263,9 @@ class TestRuns:
         done = _wait(client, _start(client, lab, "two").json()["run_id"])
         assert done["status"] == "failed" and done["exit_code"] == 3
         assert "first" in done["output"] and "never" not in done["output"]
+        lines = done["output"].splitlines()
+        assert re.fullmatch(r"\[done · \d+\.\d s\]", lines[2]), lines  # after "$ ..." and "first"
+        assert re.fullmatch(r"\[exit 3 · \d+\.\d s\]", lines[-1])
 
     def test_stop_and_one_run_at_a_time(self, client, lab_repo):
         lab = _prepare(client, lab_repo)
@@ -271,12 +276,14 @@ class TestRuns:
         stopped = client.post(f"/labs/runs/{run['run_id']}/stop").json()
         assert stopped["status"] == "stopped"
         assert "399" not in stopped["output"]
+        assert re.search(r"\[stopped · \d+\.\d s\]\n$", stopped["output"])
         assert _start(client, lab, "hello").status_code == 200  # the lab is free again
 
     def test_timeout(self, client, lab_repo):
         lab = _prepare(client, lab_repo)
         done = _wait(client, _start(client, lab, "hangs").json()["run_id"])
-        assert done["status"] == "timed_out" and "timed out" in done["output"]
+        assert done["status"] == "timed_out"
+        assert re.search(r"\[timed out · 1\.\d s\]\n$", done["output"]), done["output"]
 
     def test_unknown_action(self, client, lab_repo):
         lab = _prepare(client, lab_repo)
@@ -413,3 +420,11 @@ class TestFetchOverUnreliableNetworks:
         ):
             labs._fetch("https://github.com/SciMigo/x", "a" * 40, tmp_path)
         assert run.call_count == 1 and sleep.call_count == 0
+
+
+def test_step_line_starts_on_its_own_line():
+    run = labs.Run("r", "o", "lab", "c", "a", "now")
+    run.append("no trailing newline")
+    run.append_line("[done · 0.1 s]")
+    run.append_line("[done · 0.2 s]")
+    assert run.read(0)[0] == "no trailing newline\n[done · 0.1 s]\n[done · 0.2 s]\n"
