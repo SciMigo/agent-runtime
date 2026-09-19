@@ -1,16 +1,21 @@
 """Browser-accessible pairing endpoint."""
 
-import asyncio
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from agent_runtime.auth import is_valid_web_origin, pairing_manager
+from agent_runtime.auth import is_valid_web_origin, pairing_manager, terminal_prompt_lock
 from agent_runtime.config import settings
 
 router = APIRouter()
-_prompt_lock = asyncio.Lock()
+
+
+class PairingRequest(BaseModel):
+    """What the page asks for. "actions" is the least privilege a lab page needs."""
+
+    scope: Literal["code", "actions"] = "code"
 
 
 class PairingResponse(BaseModel):
@@ -18,11 +23,13 @@ class PairingResponse(BaseModel):
 
     origin: str
     token: str
+    scope: str
 
 
 @router.post("/request", response_model=PairingResponse)
-async def request_pairing(request: Request) -> PairingResponse:
+async def request_pairing(request: Request, body: PairingRequest | None = None) -> PairingResponse:
     """Prompt the local operator to approve the browser's Origin header."""
+    scope = (body or PairingRequest()).scope
     if not settings.require_pairing:
         raise HTTPException(status_code=409, detail="Pairing is disabled")
 
@@ -33,12 +40,13 @@ async def request_pairing(request: Request) -> PairingResponse:
             detail="A valid HTTP(S) Origin header is required",
         )
 
-    async with _prompt_lock:
-        pairing_code = pairing_manager.initiate_pairing(origin)
+    async with terminal_prompt_lock:
+        pairing_code = pairing_manager.initiate_pairing(origin, scope)
         approved = await run_in_threadpool(
             pairing_manager.prompt_for_pairing,
             origin,
             pairing_code,
+            scope,
         )
         if not approved:
             pairing_manager.cancel_pairing(pairing_code)
@@ -49,4 +57,4 @@ async def request_pairing(request: Request) -> PairingResponse:
     if token is None:
         raise HTTPException(status_code=410, detail="Pairing request expired")
 
-    return PairingResponse(origin=origin, token=token)
+    return PairingResponse(origin=origin, token=token, scope=scope)

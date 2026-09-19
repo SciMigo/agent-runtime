@@ -25,6 +25,19 @@ New origins must be paired before they can execute code:
 4. On approval, the pending HTTP response returns a bearer token
 5. Web app stores token and includes in subsequent requests
 
+### Scopes
+
+A pairing grants one scope. The page asks for it in the pairing request, and the terminal prompt
+shows it.
+
+| Scope | May use | Meaning |
+|---|---|---|
+| `code` (default) | everything, including `/kernel/*`, `/cell/*` and `/labs/*` | run any Python on the user's machine |
+| `actions` | `/labs/*` only | run the named actions of labs the user approves one by one |
+
+A token with scope `actions` gets `403` from code endpoints. Origins paired before scopes existed
+have `code`. Loopback origins, and runtimes started with `--no-pairing`, have `code`.
+
 ### Authorization Header
 
 ```
@@ -47,15 +60,19 @@ plain-HTTP origin.
 ```
 POST /pairing/request
 Origin: https://course.example.com
+Content-Type: application/json
+
+{"scope": "actions"}
 ```
 
-This request remains pending while the runtime asks the local user to approve
-the exact `Origin` header. On approval:
+The body is optional; `scope` defaults to `"code"`. This request remains pending while the
+runtime asks the local user to approve the exact `Origin` header and scope. On approval:
 
 ```json
 {
   "origin": "https://course.example.com",
-  "token": "<origin-bound bearer token>"
+  "token": "<origin-bound bearer token>",
+  "scope": "actions"
 }
 ```
 
@@ -240,6 +257,125 @@ Installs packages into the lab's virtual environment.
   "output": "Successfully installed pandas-2.0.0 numpy-1.24.0"
 }
 ```
+
+## Lab Actions
+
+A lab repository declares the commands a page may run, in `lab.toml` at the repository root.
+A page never sends a command: it names a repository and a full commit SHA, the user approves
+that lab version once in the runtime's terminal, and from then on the page starts actions by
+name. Commands run without a shell, in a checkout of that commit, with the lab's virtual
+environment first on `PATH` (so `python` and `pip` are the lab's own).
+
+### lab.toml (schema 1)
+
+```toml
+schema = 1
+id = "restate-durable-agent-demo"   # letters, digits, . _ -; also names the lab's venv
+title = "Durable agents with Restate"
+
+[actions.setup]
+label = "Prepare the lab"
+description = "Start Restate in Docker and install the demo's packages."
+steps = [
+  ["docker", "compose", "up", "-d"],
+  ["python", "-m", "pip", "install", "--quiet", "-r", "requirements.txt"],
+]
+timeout = 600        # seconds, 1-7200, default 900
+
+[actions.stable]
+label = "1.1 The extra model call"
+steps = [["python", "demo.py", "--agent", "naive", "--model", "stable"]]
+```
+
+Every step is an argv list. Steps run in order, and the first one that exits non-zero ends the
+action. Unknown keys are errors. Limits: 50 actions, 20 steps each, 100 arguments per step.
+
+### Prepare a Lab
+
+```
+POST /labs/prepare
+{"repo": "https://github.com/SciMigo/restate-durable-agent-demo",
+ "commit": "<40-character SHA>"}
+```
+
+- Checks the source: `https` URLs only (git's `GIT_ALLOW_PROTOCOL`), no credentials, full SHA.
+- Fetches exactly that commit (`--depth 1`, no submodules, no credential prompts) into
+  `<runtime dir>/labs/<repo>/<sha[:12]>`, reusing an existing checkout.
+- Reads `lab.toml`.
+- If this origin has not approved this repo, commit and manifest before, it prompts in the
+  terminal, listing every command. The request stays pending until the user answers, like
+  pairing.
+- Creates the lab's virtual environment on first use.
+
+Response:
+
+```json
+{
+  "lab_id": "restate-durable-agent-demo",
+  "title": "Durable agents with Restate",
+  "repo": "https://github.com/SciMigo/restate-durable-agent-demo",
+  "commit": "<sha>",
+  "path": "/Users/me/.agent-runtime/labs/restate-durable-agent-demo-1a2b3c4d/faf512d42fb8",
+  "actions": [
+    {"name": "setup", "label": "Prepare the lab", "description": "...",
+     "steps": ["docker compose up -d", "python -m pip install --quiet -r requirements.txt"],
+     "timeout": 600}
+  ]
+}
+```
+
+Errors: `400` for an invalid source or manifest, `403` when declined, `404` when the commit has no
+`lab.toml`, `502` when git cannot fetch the commit.
+
+### Start an Action
+
+```
+POST /labs/runs
+{"lab_id": "restate-durable-agent-demo", "commit": "<sha>", "action": "stable"}
+```
+
+Returns a run (below) with status `running`. `409` if another action of the same lab is still
+running (labs often share ports), or if the lab has not been prepared since the runtime started.
+
+### Read a Run
+
+```
+GET /labs/runs/{run_id}?offset=0
+```
+
+```json
+{
+  "run_id": "...", "lab_id": "...", "commit": "...", "action": "stable",
+  "status": "running",
+  "exit_code": null,
+  "started_at": "2026-09-19T05:00:00+00:00", "ended_at": null,
+  "output": "$ python demo.py --agent naive --model stable\n== agent: naive ...\n",
+  "next_offset": 123,
+  "truncated": false
+}
+```
+
+Poll with `offset=next_offset` to get only new output. `status` is `running`, `succeeded`,
+`failed`, `stopped` or `timed_out`. Each step's command is echoed as `$ ...`. The runtime keeps
+the last 1,000,000 characters of each run; `truncated` means the offset asked for was older than
+that. A run is visible only to the origin that started it.
+
+### Stop a Run
+
+```
+POST /labs/runs/{run_id}/stop
+```
+
+Sends SIGINT to the running step's process group, then SIGKILL if it has not exited after 8
+seconds, and skips the remaining steps. Returns the run.
+
+### List Runs
+
+```
+GET /labs/runs?lab_id=<optional>
+```
+
+This origin's runs, without output: a reloaded page can find a run that is still going.
 
 ## Output Types
 

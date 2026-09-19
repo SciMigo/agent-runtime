@@ -25,9 +25,11 @@ agent-runtime/
 │   ├── cli.py              # CLI entry point
 │   ├── serving.py          # HTTP + HTTPS listeners with one shutdown
 │   ├── tls.py              # Loopback certificate and macOS keychain trust (Safari)
+│   ├── labs.py             # Named lab actions: lab.toml, pinned checkouts, approvals, runs
 │   ├── api/
 │   │   ├── health.py       # Health check endpoints
 │   │   ├── kernel.py       # Kernel lifecycle endpoints
+│   │   ├── labs.py         # /labs: prepare, runs, stop
 │   │   └── execute.py      # Code execution endpoints
 │   └── kernels/
 │       ├── manager.py      # Kernel lifecycle management

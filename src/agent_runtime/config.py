@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     # Environment settings
     python_version: str | None = None  # Use system Python if not specified
 
+    # Lab actions (labs.py)
+    lab_git_protocols: str = "https"  # GIT_ALLOW_PROTOCOL for fetching lab repositories
+    lab_output_limit: int = 1_000_000  # characters of output kept per run
+    lab_stop_grace: float = 8.0  # seconds between SIGINT and SIGKILL when stopping a run
+
     @property
     def envs_dir(self) -> Path:
         """Directory for virtual environments."""
@@ -57,6 +62,11 @@ class Settings(BaseSettings):
     def config_file(self) -> Path:
         """Path to the config file."""
         return self.runtime_dir / "config.toml"
+
+    @property
+    def labs_dir(self) -> Path:
+        """Checkouts of lab repositories, and the record of approved lab versions."""
+        return self.runtime_dir / "labs"
 
     @property
     def tls_dir(self) -> Path:

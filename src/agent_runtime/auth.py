@@ -6,6 +6,7 @@ Handles:
 - Token-based authentication
 """
 
+import asyncio
 import hashlib
 import ipaddress
 import json
@@ -17,6 +18,18 @@ from urllib.parse import urlsplit
 from fastapi import Header, HTTPException, Request
 
 from agent_runtime.config import settings
+
+# What a paired origin may do. "code" runs any Python through kernels (/kernel, /cell) and
+# includes lab actions; "actions" only runs the named actions of labs the user approved (/labs).
+# Origins paired before scopes existed have "code".
+SCOPES = ("code", "actions")
+SCOPE_DESCRIPTIONS = {
+    "code": "run ANY Python code on this computer, with your permissions",
+    "actions": "run only the named actions of labs you approve one by one",
+}
+
+# One approval prompt at a time in the terminal, for pairing and lab approvals alike.
+terminal_prompt_lock = asyncio.Lock()
 
 
 def _is_loopback_hostname(hostname: str) -> bool:
@@ -99,18 +112,21 @@ class PairingManager:
         """
         return sorted(self._paired_origins)
 
-    def initiate_pairing(self, origin: str) -> str:
+    def initiate_pairing(self, origin: str, scope: str = "code") -> str:
         """Start a pairing request for a new origin.
 
         Returns a pairing code that must be approved.
         """
         if not is_valid_web_origin(origin):
             raise ValueError("Pairing requires a valid HTTP(S) Origin header")
+        if scope not in SCOPES:
+            raise ValueError(f"scope must be one of {', '.join(SCOPES)}")
 
         pairing_code = secrets.token_urlsafe(8)
         expires_at = datetime.utcnow() + timedelta(seconds=settings.pairing_timeout)
         self._pending_pairings[pairing_code] = {
             "origin": origin,
+            "scope": scope,
             "created_at": datetime.utcnow().isoformat(),
             "expires_at": expires_at.isoformat(),
         }
@@ -120,7 +136,7 @@ class PairingManager:
         """Discard a pending pairing request."""
         self._pending_pairings.pop(pairing_code, None)
 
-    def prompt_for_pairing(self, origin: str, pairing_code: str) -> bool:
+    def prompt_for_pairing(self, origin: str, pairing_code: str, scope: str = "code") -> bool:
         """Prompt user to approve pairing (CLI interaction).
 
         Returns True if approved.
@@ -129,6 +145,7 @@ class PairingManager:
         print("New pairing request")
         print(f"{'=' * 50}")
         print(f"Origin: {origin}")
+        print(f"Access: {scope} - this site could {SCOPE_DESCRIPTIONS.get(scope, scope)}")
         print(f"Pairing code: {pairing_code}")
         print(f"{'=' * 50}")
 
@@ -161,6 +178,7 @@ class PairingManager:
         self._paired_origins[origin] = {
             "paired_at": datetime.utcnow().isoformat(),
             "token_hash": hashlib.sha256(token.encode()).hexdigest(),
+            "scope": pairing.get("scope", "code"),
         }
         self._tokens[token] = origin
         self._save_paired_origins()
@@ -185,6 +203,10 @@ class PairingManager:
 
         return False
 
+    def scope_of(self, origin: str) -> str:
+        """The access a paired origin was granted; "code" for pairings made before scopes."""
+        return str(self._paired_origins.get(origin, {}).get("scope", "code"))
+
     def revoke_origin(self, origin: str) -> bool:
         """Revoke pairing for an origin."""
         if origin in self._paired_origins:
@@ -205,21 +227,15 @@ def get_allowed_origins() -> list[str]:
     return pairing_manager.get_allowed_origins()
 
 
-async def require_auth(
-    request: Request,
-    authorization: str | None = Header(None),
-) -> str:
-    """Dependency to require authentication.
-
-    Returns the validated origin.
-    """
+async def _authenticate(request: Request, authorization: str | None) -> tuple[str, str]:
+    """Return the request's origin and the scope it holds, or raise 401/403."""
     origin = request.headers.get("origin", "")
 
     if not settings.require_pairing:
-        return origin
+        return origin, "code"
 
     if is_loopback_origin(origin):
-        return origin
+        return origin, "code"
 
     # Require authorization header
     if not authorization:
@@ -243,4 +259,30 @@ async def require_auth(
             detail="Invalid or expired token",
         )
 
+    return origin, pairing_manager.scope_of(origin)
+
+
+async def require_auth(
+    request: Request,
+    authorization: str | None = Header(None),
+) -> str:
+    """Dependency for code execution (kernels, cells): requires the "code" scope.
+
+    Returns the validated origin.
+    """
+    origin, scope = await _authenticate(request, authorization)
+    if scope != "code":
+        raise HTTPException(
+            status_code=403,
+            detail=f"This origin is paired for '{scope}' only; running code needs 'code'",
+        )
+    return origin
+
+
+async def require_lab_auth(
+    request: Request,
+    authorization: str | None = Header(None),
+) -> str:
+    """Dependency for lab actions (/labs): either scope. Returns the validated origin."""
+    origin, _scope = await _authenticate(request, authorization)
     return origin
