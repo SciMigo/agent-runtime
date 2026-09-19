@@ -394,6 +394,8 @@ class Run:
     _task: asyncio.Task[None] | None = None
 
     def append(self, text: str) -> None:
+        if not text:  # e.g. the decoder's final flush; would hide whether output ends a line
+            return
         self._chunks.append(text)
         self._length += len(text)
         limit = settings.lab_output_limit
@@ -404,12 +406,26 @@ class Run:
             self._base += drop
             self._length = limit
 
+    def append_line(self, line: str) -> None:
+        """Append `line` on a line of its own, even after output without a final newline."""
+        ends_clean = not self._chunks or self._chunks[-1].endswith("\n")
+        self.append(("" if ends_clean else "\n") + line + "\n")
+
     def read(self, offset: int) -> tuple[str, int, bool]:
         """Output from `offset` on, the next offset, and whether earlier output was dropped."""
         text = "".join(self._chunks)
         truncated = offset < self._base
         start = max(offset - self._base, 0)
         return text[start:], self._base + len(text), truncated
+
+
+def _step_result(code: int, seconds: float, stop_reason: str | None) -> str:
+    """How a step ended, e.g. [done · 2.1 s], [exit 3 · 0.4 s], [stopped · 5.0 s]."""
+    if stop_reason:
+        outcome = stop_reason.replace("_", " ")
+    else:
+        outcome = "done" if code == 0 else f"exit {code}"
+    return f"[{outcome} · {seconds:.1f} s]"
 
 
 def _now() -> str:
@@ -497,7 +513,10 @@ class LabManager:
                 if run._stop_reason:
                     break
                 run.append(f"$ {shlex.join(argv)}\n")
+                started = time.monotonic()
                 code = await self._step(run, lab, argv, env)
+                # A line per step, so a quiet command (pip install --quiet) visibly ends.
+                run.append_line(_step_result(code, time.monotonic() - started, run._stop_reason))
                 if run._stop_reason or code != 0:
                     run.exit_code = code
                     break
@@ -542,8 +561,7 @@ class LabManager:
 
     async def _watch(self, run: Run, deadline: float) -> None:
         await asyncio.sleep(max(deadline - time.monotonic(), 0))
-        run.append("\n[runtime] timed out\n")
-        await self.stop(run, reason="timed_out")
+        await self.stop(run, reason="timed_out")  # the step's result line says so
 
     async def shutdown(self) -> None:
         """Stop every running action and wait for it to finish, so no process outlives us."""
