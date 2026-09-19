@@ -349,3 +349,67 @@ class TestScopes:
         assert initiate.call_args.args == (SITE, "actions")
         assert prompt.call_args.args[2] == "actions"
         assert bad.status_code == 422
+
+
+FRAMING_ERROR = "fatal: unable to access 'https://github.com/x/': Error in the HTTP2 framing layer"
+
+
+class TestFetchOverUnreliableNetworks:
+    """Fetching a lab through proxies and VPNs (HTTP/2 framing errors, stalls)."""
+
+    def _completed(self, code: int, stderr: str = "") -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess([], code, "", stderr)
+
+    def test_fetch_uses_http_1_1_and_gives_up_on_a_stalled_connection(self, lab_settings, tmp_path):
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append(args)
+            return self._completed(0)
+
+        with patch.object(labs.subprocess, "run", side_effect=run):
+            labs._fetch("https://github.com/SciMigo/x", "a" * 40, tmp_path)
+        assert calls[0][:8] == [
+            "git",
+            "-c",
+            "http.version=HTTP/1.1",
+            "-c",
+            "http.lowSpeedLimit=1000",
+            "-c",
+            "http.lowSpeedTime=30",
+            "fetch",
+        ]
+
+    def test_network_errors_are_retried(self, lab_settings, tmp_path):
+        framing = FRAMING_ERROR
+        results = [self._completed(128, framing), self._completed(128, framing), self._completed(0)]
+        with (
+            patch.object(labs.subprocess, "run", side_effect=lambda *a, **k: results.pop(0)),
+            patch.object(labs.time, "sleep") as sleep,
+        ):
+            labs._fetch("https://github.com/SciMigo/x", "a" * 40, tmp_path)
+        assert results == [] and sleep.call_count == 2
+
+    def test_gives_up_after_three_attempts_and_says_what_to_check(self, lab_settings, tmp_path):
+        framing = FRAMING_ERROR
+        with (
+            patch.object(labs.subprocess, "run", return_value=self._completed(128, framing)) as run,
+            patch.object(labs.time, "sleep"),
+            pytest.raises(labs.LabError) as error,
+        ):
+            labs._fetch("https://github.com/SciMigo/x", "a" * 40, tmp_path)
+        assert run.call_count == labs.FETCH_ATTEMPTS
+        message = str(error.value)
+        assert message.startswith("git fetch failed:") and "HTTP2 framing" in message
+        assert "tried 3 times" in message and "github.com" in message and "proxy" in message
+        assert error.value.status == 502
+
+    def test_a_missing_commit_is_not_retried(self, lab_settings, tmp_path):
+        missing = "fatal: remote error: upload-pack: not our ref " + "a" * 40
+        with (
+            patch.object(labs.subprocess, "run", return_value=self._completed(128, missing)) as run,
+            patch.object(labs.time, "sleep") as sleep,
+            pytest.raises(labs.LabError, match="not our ref"),
+        ):
+            labs._fetch("https://github.com/SciMigo/x", "a" * 40, tmp_path)
+        assert run.call_count == 1 and sleep.call_count == 0
