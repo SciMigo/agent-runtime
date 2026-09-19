@@ -137,6 +137,24 @@ class ExecuteRequest(BaseModel):
     cell_id: Optional[str] = None
 ```
 
+### 7. Loopback TLS Certificate
+
+`agent-runtime tls setup` lets Safari reach the runtime from HTTPS pages (it
+blocks `http://127.0.0.1` there as mixed content). The certificate is:
+
+- self-signed and generated on the machine; the private key stays in
+  `<runtime dir>/tls/` (directory `0700`, key `0600`) and is never sent anywhere;
+- valid only for `127.0.0.1`, `::1` and `localhost`, for server authentication;
+- not a certificate authority (`basicConstraints CA:FALSE`, no `keyCertSign`),
+  so trusting it cannot make the machine accept a certificate for any other
+  name, even if the key were stolen;
+- valid for 397 days; `tls setup` renews it within 30 days of expiry.
+
+On macOS it is added to the login keychain with SSL trust only. The HTTPS
+listener serves the same app as the HTTP one: pairing and bearer tokens apply
+unchanged. `agent-runtime tls remove` removes the trust setting, the keychain
+entry and the files.
+
 ## Known Limitations
 
 ### 1. No Code Sandboxing
@@ -203,6 +221,9 @@ agent-runtime pairing revoke https://suspicious-origin.com
 
 # Nuclear option - delete all pairing data
 rm ~/.agent-runtime/paired_origins.json
+
+# Untrust and delete the loopback HTTPS certificate
+agent-runtime tls remove
 ```
 
 ### Cleaning Up Environments

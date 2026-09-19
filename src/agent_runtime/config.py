@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     # Server settings
     host: str = "127.0.0.1"
     port: int = 9477
+    # Second listener, HTTPS on loopback, for Safari (see tls.py). Used once `tls setup` has run.
+    https_port: int = 9478
     debug: bool = False
 
     # Runtime data directory
@@ -55,6 +57,19 @@ class Settings(BaseSettings):
     def config_file(self) -> Path:
         """Path to the config file."""
         return self.runtime_dir / "config.toml"
+
+    @property
+    def tls_dir(self) -> Path:
+        """Directory for the loopback TLS certificate and its private key."""
+        return self.runtime_dir / "tls"
+
+    @property
+    def tls_cert_file(self) -> Path:
+        return self.tls_dir / "localhost.pem"
+
+    @property
+    def tls_key_file(self) -> Path:
+        return self.tls_dir / "localhost-key.pem"
 
     @property
     def paired_origins_file(self) -> Path:

@@ -68,6 +68,22 @@ python -m agent_runtime.server
 
 The runtime will start on `http://localhost:9477` by default.
 
+### HTTPS for Safari
+
+Safari blocks HTTPS pages from calling `http://127.0.0.1`, so a course page on
+an HTTPS site cannot reach the runtime there. Run this once:
+
+```bash
+agent-runtime tls setup
+```
+
+It creates a certificate valid only for 127.0.0.1, ::1 and localhost (not a
+certificate authority, 397 days) and, on macOS, trusts it for SSL in your login
+keychain, which asks for your password. From then on `agent-runtime serve` also
+listens on `https://127.0.0.1:9478`. `agent-runtime tls status` shows the
+certificate and its expiry; `tls setup` renews it; `tls remove` untrusts and
+deletes it. Chrome and Firefox reach `http://127.0.0.1:9477` without this step.
+
 ### Pairing
 
 Loopback web apps (`localhost`, `127.0.0.1`, or `::1`, on any port) are trusted
@@ -105,14 +121,14 @@ agent-runtime serve
 ### JavaScript Example
 
 ```javascript
-const RUNTIME_URL = 'http://127.0.0.1:9477';
+// HTTPS (after `agent-runtime tls setup`) is the only address Safari can reach from
+// an HTTPS page; Chrome and Firefox reach both. No targetAddressSpace option is
+// needed: 127.0.0.1 is loopback, and Chrome rejects the "local" annotation for it.
+const RUNTIME_URL = 'https://127.0.0.1:9478';  // or 'http://127.0.0.1:9477'
 
 // Required when this page is served from a non-loopback origin.
 async function pair() {
-  const res = await fetch(`${RUNTIME_URL}/pairing/request`, {
-    method: 'POST',
-    targetAddressSpace: 'local'
-  });
+  const res = await fetch(`${RUNTIME_URL}/pairing/request`, { method: 'POST' });
   if (!res.ok) throw new Error((await res.json()).detail);
   return (await res.json()).token;
 }
@@ -200,6 +216,7 @@ await executeStreaming('my-session', 'for i in range(5): print(i)', (output) => 
 |----------|---------|-------------|
 | `AGENT_RUNTIME_HOST` | `127.0.0.1` | Server bind address |
 | `AGENT_RUNTIME_PORT` | `9477` | Server port |
+| `AGENT_RUNTIME_HTTPS_PORT` | `9478` | HTTPS port, used once `agent-runtime tls setup` has run |
 | `AGENT_RUNTIME_REQUIRE_PAIRING` | `true` | Require origin approval |
 | `AGENT_RUNTIME_DEBUG` | `false` | Enable debug mode with hot reload |
 

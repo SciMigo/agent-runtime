@@ -1,12 +1,15 @@
 # Browser Integration
 
-Agent Runtime exposes a vendor-neutral HTTP API at `http://127.0.0.1:9477`.
-It is intended for browser-based courses and labs that execute Python on the
-learner's own computer.
+Agent Runtime exposes a vendor-neutral HTTP API at `http://127.0.0.1:9477` and,
+once `agent-runtime tls setup` has run, the same API over HTTPS at
+`https://127.0.0.1:9478`. It is intended for browser-based courses and labs
+that execute Python on the learner's own computer.
 
 ## Connection flow
 
-1. Call `GET /health` to detect the local runtime.
+1. Call `GET /health` to detect the local runtime: `https://127.0.0.1:9478`
+   first, then `http://127.0.0.1:9477`. Safari reaches only the HTTPS address
+   (see below); Chrome and Firefox reach both.
 2. If the page has a loopback origin, call runtime endpoints directly.
 3. Otherwise, call `POST /pairing/request` and tell the learner to review the
    approval prompt in the terminal that started Agent Runtime.
@@ -19,20 +22,27 @@ The browser cannot select the origin being approved. The runtime reads the
 browser-controlled `Origin` header and binds the token to that exact value.
 
 ```javascript
-const runtimeUrl = "http://127.0.0.1:9477";
+// HTTPS first (the only one Safari allows from an HTTPS page), then HTTP.
+async function findRuntime() {
+  for (const url of ["https://127.0.0.1:9478", "http://127.0.0.1:9477"]) {
+    try {
+      if ((await fetch(`${url}/health`)).ok) return url;
+    } catch {
+      // not listening, blocked by the browser, or the certificate is not trusted
+    }
+  }
+  return null;
+}
 
-async function pairRuntime() {
-  const response = await fetch(`${runtimeUrl}/pairing/request`, {
-    method: "POST",
-    targetAddressSpace: "local",
-  });
+async function pairRuntime(runtimeUrl) {
+  const response = await fetch(`${runtimeUrl}/pairing/request`, { method: "POST" });
   if (!response.ok) {
     throw new Error((await response.json()).detail);
   }
   return (await response.json()).token;
 }
 
-async function runCell(token, labId, code) {
+async function runCell(runtimeUrl, token, labId, code) {
   const response = await fetch(`${runtimeUrl}/cell/run`, {
     method: "POST",
     headers: {
@@ -50,10 +60,28 @@ async function runCell(token, labId, code) {
 
 ## Browser security behavior
 
-Chrome 142 and later asks the learner for Local Network Access permission when
-a public site first contacts loopback. The `targetAddressSpace: "local"`
-annotation declares that intent. Other browsers may still use Private Network
-Access preflights, which the runtime answers for compatibility.
+Measured on macOS, 2026-09-19, from an HTTPS page on a public origin:
+
+| Browser | `http://127.0.0.1:9477` | `https://127.0.0.1:9478` (after `tls setup`) |
+|---|---|---|
+| Chrome 152 | works after the Local Network Access prompt | works |
+| Firefox 155 | works | works |
+| Safari 26.6 | blocked as mixed content (`TypeError: Load failed`) | works |
+
+- **Chrome** (142 and later) asks the learner for Local Network Access
+  permission the first time a public site contacts loopback. If the learner
+  declines, requests fail with a CORS "Permission was denied" error. Do not pass
+  `targetAddressSpace: "local"`: `127.0.0.1` is in the `loopback` address
+  space, and Chrome 151 rejects the mismatch ("Request had a target IP address
+  space of `local` yet the resource is in address space `loopback`"). No
+  annotation is needed.
+- **Safari** treats `http://127.0.0.1` as insecure content and blocks it from
+  HTTPS pages. `agent-runtime tls setup` creates a certificate for 127.0.0.1,
+  ::1 and localhost and trusts it in the login keychain; `agent-runtime serve`
+  then also listens on `https://127.0.0.1:9478`.
+- Browsers that still use Private Network Access preflights get the
+  `Access-Control-Allow-Private-Network` response the runtime sends for
+  compatibility.
 
 CORS enables transport; it does not grant execution authority. Protected
 endpoints still require either a loopback page origin or a bearer token issued

@@ -23,6 +23,8 @@ agent-runtime/
 │   ├── events.py           # Observability event system
 │   ├── observability.py    # Metrics and logging
 │   ├── cli.py              # CLI entry point
+│   ├── serving.py          # HTTP + HTTPS listeners with one shutdown
+│   ├── tls.py              # Loopback certificate and macOS keychain trust (Safari)
 │   ├── api/
 │   │   ├── health.py       # Health check endpoints
 │   │   ├── kernel.py       # Kernel lifecycle endpoints
