@@ -18,6 +18,7 @@ class TestSettings:
 
             assert settings.host == "127.0.0.1"
             assert settings.port == 9477
+            assert settings.https_port == 9478
             assert settings.debug is False
             assert settings.require_pairing is True
             assert settings.pairing_timeout == 300
