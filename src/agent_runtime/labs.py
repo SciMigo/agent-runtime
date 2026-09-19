@@ -59,7 +59,25 @@ MAX_ACTIONS = 50
 MAX_STEPS = 20
 MAX_ARGS = 100
 MAX_ARG_LENGTH = 4096
-GIT_TIMEOUT = 300
+GIT_TIMEOUT = 180  # seconds per git command
+
+# Fetching a lab over the network. HTTP/1.1, because HTTP/2 through some proxies and VPNs fails
+# with "Error in the HTTP2 framing layer" (seen 2026-09-19 on macOS, fetching from GitHub);
+# a shallow fetch is no slower over HTTP/1.1. Under 1 KB/s for 30 s counts as stalled, so a dead
+# connection fails in half a minute instead of at the timeout. Network failures are retried;
+# a missing commit or repository is not.
+FETCH_CONFIG = (
+    "-c", "http.version=HTTP/1.1",
+    "-c", "http.lowSpeedLimit=1000",
+    "-c", "http.lowSpeedTime=30",
+)  # fmt: skip
+FETCH_ATTEMPTS = 3
+FETCH_BACKOFF = (2.0, 5.0)
+_PERMANENT_FETCH_ERROR = re.compile(
+    r"not our ref|couldn't find remote ref|repository '[^']*' not found|could not read username"
+    r"|authentication failed",
+    re.IGNORECASE,
+)
 
 
 class LabError(Exception):
@@ -188,6 +206,14 @@ def checkout_dir(lab_key: str, commit: str) -> Path:
     return settings.labs_dir / lab_key / commit[:12]
 
 
+def _command_name(args: list[str]) -> str:
+    """The git subcommand in `args`, skipping leading `-c key=value` options."""
+    i = 0
+    while i < len(args) and args[i] == "-c":
+        i += 2
+    return args[i] if i < len(args) else "git"
+
+
 def _git(args: list[str], cwd: Path | None = None) -> str:
     env = dict(
         os.environ,
@@ -207,10 +233,31 @@ def _git(args: list[str], cwd: Path | None = None) -> str:
     except FileNotFoundError as error:
         raise LabError("git is not installed", 500) from error
     except subprocess.TimeoutExpired as error:
-        raise LabError("git timed out fetching the lab", 504) from error
+        raise LabError(f"git {_command_name(args)} timed out", 504) from error
     if result.returncode != 0:
-        raise LabError(f"git {args[0]} failed: {(result.stderr or result.stdout).strip()}", 502)
+        detail = (result.stderr or result.stdout).strip()
+        raise LabError(f"git {_command_name(args)} failed: {detail}", 502)
     return result.stdout.strip()
+
+
+def _fetch(repo: str, commit: str, cwd: Path) -> None:
+    """`git fetch` exactly `commit`, retrying network failures (see FETCH_CONFIG)."""
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            fetch = ["fetch", "--quiet", "--depth", "1", "--no-tags", repo, commit]
+            _git([*FETCH_CONFIG, *fetch], cwd)
+            return
+        except LabError as error:
+            if _PERMANENT_FETCH_ERROR.search(str(error)):
+                raise
+            if attempt == FETCH_ATTEMPTS:
+                host = urlsplit(repo).hostname or repo
+                raise LabError(
+                    f"{error} (tried {attempt} times; check that this computer can reach {host}, "
+                    "for example through its proxy or VPN)",
+                    error.status,
+                ) from error
+            time.sleep(FETCH_BACKOFF[attempt - 1])
 
 
 def fetch_commit(repo: str, commit: str, dest: Path) -> Path:
@@ -223,7 +270,7 @@ def fetch_commit(repo: str, commit: str, dest: Path) -> Path:
     shutil.rmtree(partial, ignore_errors=True)
     partial.mkdir(parents=True)
     _git(["init", "--quiet"], cwd=partial)
-    _git(["fetch", "--quiet", "--depth", "1", "--no-tags", repo, commit], cwd=partial)
+    _fetch(repo, commit, partial)
     _git(
         ["-c", "advice.detachedHead=false", "checkout", "--quiet", "--detach", "FETCH_HEAD"],
         cwd=partial,
