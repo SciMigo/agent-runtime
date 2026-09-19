@@ -40,6 +40,25 @@ This runtime is designed with user trust as a core principle:
 
 ### Installation
 
+On macOS, one command. It uses [uv](https://docs.astral.sh/uv/) if you have it, which also brings
+the right Python, or else Python 3.11 or newer; if neither is there, it says how to get one. Run it
+again to upgrade.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SciMigo/agent-runtime/main/scripts/install-macos.sh | bash
+```
+
+On Linux, or anywhere with uv:
+
+```bash
+uv tool install --from https://github.com/SciMigo/agent-runtime/archive/refs/heads/main.tar.gz agent-runtime
+```
+
+If your shell cannot find `agent-runtime` afterwards, run `uv tool update-shell` and open a new
+terminal. Do not `pip install agent-runtime` from PyPI: that name belongs to an unrelated package.
+
+To work on the runtime itself, install it from a clone:
+
 ```bash
 # Clone the repository
 git clone https://github.com/SciMigo/agent-runtime.git
