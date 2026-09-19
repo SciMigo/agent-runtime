@@ -43,6 +43,13 @@ steps = [[
   "import time\\nfor i in range(400):\\n    print(i, flush=True)\\n    time.sleep(0.05)",
 ]]
 
+[actions.env]
+label = "Prints its color settings"
+steps = [[
+  "python", "-c",
+  "import os; print(os.environ.get('FORCE_COLOR'), os.environ.get('CLICOLOR_FORCE'))",
+]]
+
 [actions.hangs]
 label = "Times out"
 timeout = 1
@@ -141,7 +148,7 @@ class TestManifest:
     def test_valid(self):
         manifest = labs.parse_manifest(MANIFEST)
         assert manifest.lab_id == "demo-lab"
-        assert list(manifest.actions) == ["hello", "two", "slow", "hangs"]
+        assert list(manifest.actions) == ["hello", "two", "slow", "env", "hangs"]
         assert manifest.actions["two"].steps[1] == ("python", "-c", "import sys; sys.exit(3)")
         assert manifest.actions["hello"].timeout == labs.DEFAULT_TIMEOUT
         assert manifest.actions["hangs"].timeout == 1
@@ -213,7 +220,7 @@ class TestPrepare:
     def test_asks_once_per_lab_version(self, client, lab_repo):
         lab = _prepare(client, lab_repo)
         assert lab["lab_id"] == "demo-lab" and lab["commit"] == lab_repo[1]
-        assert [a["name"] for a in lab["actions"]] == ["hello", "two", "slow", "hangs"]
+        assert [a["name"] for a in lab["actions"]] == ["hello", "two", "slow", "env", "hangs"]
         assert len(client.prompts) == 1
         prompt = client.prompts[0]
         assert SITE in prompt and lab_repo[1] in prompt
@@ -278,6 +285,13 @@ class TestRuns:
         assert "399" not in stopped["output"]
         assert re.search(r"\[stopped · \d+\.\d s\]\n$", stopped["output"])
         assert _start(client, lab, "hello").status_code == 200  # the lab is free again
+
+    def test_actions_are_asked_for_colors(self, client, lab_repo, monkeypatch):
+        monkeypatch.delenv("FORCE_COLOR", raising=False)
+        monkeypatch.delenv("CLICOLOR_FORCE", raising=False)
+        lab = _prepare(client, lab_repo)
+        done = _wait(client, _start(client, lab, "env").json()["run_id"])
+        assert "\n1 1\n" in done["output"], done["output"]
 
     def test_timeout(self, client, lab_repo):
         lab = _prepare(client, lab_repo)
