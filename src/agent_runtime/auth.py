@@ -276,8 +276,7 @@ async def _authenticate(request: Request, authorization: str | None) -> tuple[st
         raise HTTPException(
             status_code=401,
             detail=(
-                "Unknown local client token. Issue one with "
-                "'agent-runtime token create <name>'."
+                "Unknown local client token. Issue one with 'agent-runtime token create <name>'."
             ),
         )
 

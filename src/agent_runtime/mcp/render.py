@@ -87,9 +87,7 @@ def render_execution(result: dict[str, Any]) -> list[ContentBlock]:
     dropped = max(0, len(images) - MAX_IMAGES)
     blocks.extend(images[:MAX_IMAGES])
     if dropped:
-        blocks.append(
-            TextContent(type="text", text=f"[{dropped} further image(s) not shown]")
-        )
+        blocks.append(TextContent(type="text", text=f"[{dropped} further image(s) not shown]"))
 
     if not blocks:
         # Content of some kind, always: an empty result reads like a broken tool.

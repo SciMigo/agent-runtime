@@ -79,7 +79,7 @@ class TestRunPython:
         }
 
         with patch.object(server, "_runtime", runtime(answering(httpx.Response(200, json=failed)))):
-            blocks = await server.run_python("demo", "raise ValueError(\'bad\')")
+            blocks = await server.run_python("demo", "raise ValueError('bad')")
 
         assert "ValueError: bad" in blocks[0].text
 
