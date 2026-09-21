@@ -177,6 +177,26 @@ run, down to the commit. It does not sandbox them. Approving `python demo.py` tr
 `demo.py` at that commit, with your permissions, like cloning the repository and running it
 yourself. A new commit needs a new approval.
 
+### 9. Local Client Tokens
+
+A process on this machine has no origin to pair, so it authenticates with a token issued by
+`agent-runtime token create <name>` and sent without an `Origin` header. Tokens are hashed
+before storage in `<runtime dir>/local_clients.json` (mode `0600`), and `agent-runtime token
+list` and `token revoke` work against a running runtime, which re-reads the file whenever it
+changes.
+
+**What this is not.** A `code`-scope local token is not a boundary against an attacker who can
+already run code as the user: they could start a kernel themselves. What it buys is revocation,
+a name per client in the logs, and a scope.
+
+**What the scope is for.** The new exposure is prompt injection, not token theft. An MCP client
+is a model reading untrusted text - course pages, lab output, tracebacks from third-party
+packages - and then deciding what to run. A client holding an `actions`-scope token can be
+talked into starting a lab action the user already approved, and nothing else. That is why
+`agent-runtime token create` defaults to `actions` and `--scope code` has to be typed.
+
+See [mcp.md](mcp.md).
+
 ## Known Limitations
 
 ### 1. No Code Sandboxing
@@ -204,6 +224,12 @@ Tokens are stored by the web application. If the web app is compromised, tokens 
 **Mitigation**:
 - Tokens are origin-bound (can't be used from other origins)
 - Users can revoke pairings: `agent-runtime pairing revoke <origin>`
+
+### 4. Agent Clients Read Untrusted Text
+
+A local client with the `code` scope runs whatever its model decides to run, and that model
+reads course pages, lab output and library tracebacks. Treat a `code`-scope token as equivalent
+to letting that client type into your terminal, and prefer `actions` where it is enough.
 
 ## Hardening Recommendations
 
@@ -249,6 +275,10 @@ agent-runtime tls remove
 
 # Forget every approved lab version (the next prepare asks again)
 rm ~/.agent-runtime/labs/approvals.json
+
+# List and revoke local clients (MCP servers and other local processes)
+agent-runtime token list
+agent-runtime token revoke "Claude Desktop"
 ```
 
 ### Cleaning Up Environments
@@ -273,6 +303,8 @@ rm -rf ~/.agent-runtime/envs/
 - [ ] Input validation on all endpoints
 - [ ] Environments isolated per lab
 - [ ] User can revoke pairings
+- [ ] User can revoke local client tokens
+- [ ] Local client tokens are hashed, 0600, and re-read while serving
 - [ ] User can delete environments
 
 ## Reporting Security Issues

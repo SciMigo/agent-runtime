@@ -1,9 +1,10 @@
 # MCP Server
 
 > [!NOTE]
-> **Status: proposed.** Nothing in this document is implemented. It records the design and the
-> reasons behind it, so the first pull request can be read against something. The endpoints and
-> behavior described in [protocol.md](protocol.md) are what exists today.
+> **Status: step 1 is implemented**, and this document doubles as its design. Shipped:
+> local client tokens, `GET /runtime/whoami`, `agent-runtime token`, `agent-runtime mcp` and
+> its one tool, `run_python`. Steps 2 to 4 below are still proposals. Where the implementation
+> departed from the design, the section says so.
 
 An MCP server would let any Model Context Protocol client — Claude Code, Claude Desktop, Cursor,
 an agent gateway — run code in a learner's lab, start the lab's approved actions, and read what
@@ -37,8 +38,19 @@ Ship **stdio** first. The client configuration is one line, every MCP client sup
 needs no port, no CORS and no DNS-rebinding defense:
 
 ```json
-{ "mcpServers": { "agent-runtime": { "command": "agent-runtime", "args": ["mcp"] } } }
+{
+  "mcpServers": {
+    "agent-runtime": {
+      "command": "agent-runtime",
+      "args": ["mcp"],
+      "env": { "AGENT_RUNTIME_TOKEN": "<from 'agent-runtime token create'>" }
+    }
+  }
+}
 ```
+
+`AGENT_RUNTIME_URL` overrides where the adapter looks for the runtime; `--url` and `--token`
+do the same on the command line.
 
 Streamable HTTP at `/mcp` inside the `serve` process is the natural second step. Note before
 taking it that the CORS middleware allows any web origin (`server.py`), so that endpoint would be
@@ -58,7 +70,7 @@ in `auth.py` reads the `Origin` header; a request without one falls through to t
 where `validate_token(token, "")` cannot match, because every token is bound to a paired origin.
 The only way in is `--no-pairing`, which is not an answer.
 
-Add a third principal type with its own store, beside `paired_origins.json`:
+So there is a third principal type, with its own store beside `paired_origins.json`:
 
 | Principal | Identified by | Granted by |
 |---|---|---|
@@ -89,7 +101,12 @@ Two invariants keep the browser model intact:
   never be usable from a page.
 
 Tokens are hashed before storage, like pairing tokens, in `<runtime dir>/local_clients.json`
-(`0600`). The CLI mirrors `agent-runtime pairing`:
+(`0600`). Unlike pairing, which happens through the running server, tokens are issued by a
+separate process, so the server re-reads that file whenever it changes: a token issued while
+the runtime is serving works immediately, and - the reason the check is on every lookup rather
+than only on a miss - a revoked one stops working immediately.
+
+The CLI mirrors `agent-runtime pairing`:
 
 ```bash
 agent-runtime token create "Claude Desktop"    # prints the token once; defaults to scope actions
@@ -98,18 +115,26 @@ agent-runtime token list
 agent-runtime token revoke "Claude Desktop"
 ```
 
-Add `GET /runtime/whoami`, returning the caller's principal and scope, so the adapter registers
-only the tools its token can use instead of advertising tools that will answer `403`.
+`GET /runtime/whoami` returns the caller's principal and scope, for a client to check its token
+with.
+
+The design had the adapter register only the tools its token can use. It does not: a client asks
+for the tool list once, at connect time, when the runtime may not be running yet, and a list that
+varies with whether the daemon happened to be up is worse than a stable one. A call the scope
+forbids fails with the runtime's own message and the command that widens it.
 
 ## Tools
 
 Ten tools, each a verb a model already understands. Deliberately not a mirror of the REST surface:
 an agent should not have to orchestrate prepare → run → poll by hand.
 
+`run_python` is implemented; the rest arrive with steps 2 and 3. `list_labs` waits for step 2
+because environments are not exposed over HTTP at all yet.
+
 | Tool | Arguments | Scope | Notes |
 |---|---|---|---|
 | `list_labs` | — | both | environments, live kernels, prepared commits |
-| `run_python` | `lab_id`, `code`, `timeout_s` | code | creates the environment and kernel if missing |
+| `run_python` | `lab_id`, `code` | code | **shipped.** Creates the environment and kernel if missing |
 | `interrupt_kernel` | `lab_id` | code | |
 | `restart_kernel` | `lab_id` | code | |
 | `install_packages` | `lab_id`, `packages` | code | returns the tail of pip's output |
@@ -119,18 +144,9 @@ an agent should not have to orchestrate prepare → run → poll by hand.
 | `stop_run` | `run_id` | both | |
 | `get_history` | `lab_id`, `n` | both | see below |
 
-```python
-from mcp.server import MCPServer
-
-mcp = MCPServer("agent-runtime")
-
-
-@mcp.tool()
-async def run_python(lab_id: str, code: str, timeout_s: int = 60) -> list[Content]:
-    """Run Python in the learner's lab kernel. Variables persist between calls."""
-    result = await runtime.post("/cell/run", {"lab_id": lab_id, "code": code})
-    return render_outputs(result["outputs"])
-```
+The SDK is `mcp` (`MCPServer` from `mcp.server`), an optional dependency: install it with
+`pip install 'agent-runtime[mcp]'`. Nothing else in the runtime needs it, and a learner who only
+opens a course page never runs it.
 
 `run_action` must not block until the action finishes. Actions may run up to 7200 seconds
 (`labs.py`), and a tool call held open that long will time out somewhere in the client. It returns
@@ -141,14 +157,19 @@ after `wait_s` (20 by default) with the run id, the status and the output so far
 
 Three conversions decide whether any of this is usable, and all three belong in the adapter.
 
-**Strip ANSI.** Lab actions run with `FORCE_COLOR=1` and `CLICOLOR_FORCE=1` on purpose, because the
-page that started them renders color (`labs.py`). A model receives escape codes as noise it pays
-tokens for. Strip them in the adapter rather than changing what the browser gets.
+**Strip ANSI.** IPython colors its tracebacks, and lab actions run with `FORCE_COLOR=1` and
+`CLICOLOR_FORCE=1` on purpose, because the page that started them renders color (`labs.py`). A
+model receives escape codes as noise it pays tokens for. Strip them in the adapter rather than
+changing what the browser gets.
 
 **Pass images through.** `display_data` messages are captured with their whole `data` dictionary
 (`kernels/ipython.py`), so a matplotlib figure already arrives from `/cell/run` as base64
 `image/png`. Turning those into MCP image content lets a tutor see the learner's plot, which for a
 course is a feature rather than a detail.
+
+Note while reading that code that `/cell/run` returns outputs shaped `{"type": ..., "content":
+{...}}`, while `docs/protocol.md` and the streaming endpoint document the flatter nbformat-like
+`{"output_type": ..., "text": ...}`. The renderer accepts both, but the two should be reconciled.
 
 **Bound the result.** Cap a tool result at roughly 8–16 KB, keeping the head and tail with a marker
 between them. Nothing is lost: the runtime keeps the last 1,000,000 characters of each run and
@@ -176,21 +197,22 @@ hand, while tools are called on the model's own initiative. The tool is the one 
 ```
 src/agent_runtime/mcp/
 ├── __init__.py
-├── server.py      # the MCPServer instance and the tool definitions
-├── client.py      # RuntimeClient: httpx against 127.0.0.1:9477, token read from disk
-└── render.py      # outputs -> MCP content: ANSI stripping, truncation, images
-src/agent_runtime/auth.py        # the local client principal
-src/agent_runtime/api/health.py  # GET /runtime/whoami
-src/agent_runtime/cli.py         # the `mcp` and `token` subcommands
+├── server.py       # the MCPServer instance and the tool definitions
+├── client.py       # RuntimeClient: httpx against 127.0.0.1:9477
+└── render.py       # outputs -> MCP content: ANSI stripping, truncation, images
+src/agent_runtime/local_tokens.py  # the token store
+src/agent_runtime/auth.py          # the local client principal
+src/agent_runtime/server.py        # GET /runtime/whoami
+src/agent_runtime/cli.py           # the `mcp` and `token` subcommands
 ```
 
 `mcp` goes in an optional dependency group so the base install stays small. The tool functions take
-a client, so they unit-test against a fake one; keep a single integration test against a live
-`serve`.
+a client, so they are tested against an `httpx.MockTransport` rather than a live server - including
+the invariant that the adapter sends no `Origin` header.
 
 ## Security
 
-This belongs in [security.md](security.md) once it ships, stated plainly.
+Stated plainly in [security.md](security.md).
 
 A local client token with the `code` scope **is not a new authority boundary**. Anyone who can read
 the token file can already run Python as the user. What the token buys is revocation and an audit
@@ -208,13 +230,14 @@ Route every MCP tool call through `events.py` with the principal attached, so th
 
 ## Milestones
 
-1. **Adapter, `run_python`, local client tokens.** End to end, one client, real value.
-2. **Lab tools and rendering** — ANSI, truncation, images.
+1. ~~**Adapter, `run_python`, local client tokens.**~~ Done.
+2. **Lab tools and rendering** — the lab tools, `list_labs` and the environments it needs.
 3. **History** — the buffer, the endpoint, the tool and the resource.
 4. **Streamable HTTP**, if clients ask for it.
 
-Add `"mcp"` to the capability list in `/runtime/info` when step 1 lands, and document the client
-configuration in this file.
+`/runtime/info` advertises `local_clients` rather than the `mcp` the design named: the capability
+list tells a *page* what the runtime offers, and the MCP server is a separate process rather than
+something a page can reach.
 
 ## Open questions
 
@@ -224,4 +247,6 @@ configuration in this file.
 - **Streaming.** `/cell/run/stream` exists; the MCP equivalent is progress notifications. Polling is
   enough for a first version.
 - **Whether the adapter may start the runtime.** Convenient, and it puts a process launch behind a
-  tool call. Leaning no.
+  tool call. Still no: an unreachable runtime returns a message naming `agent-runtime serve`.
+- **Audit events.** MCP calls reach the runtime as ordinary HTTP requests and are logged as such,
+  with `local:<name>` as the principal, but they do not yet emit their own events.

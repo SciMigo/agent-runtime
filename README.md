@@ -19,6 +19,7 @@ Agent Runtime is the execution layer that powers AI agent code execution. It pro
 - **Per-lab Python environments** - dependencies are separated between sessions
 - **Secure localhost protocol** - pairing-based authentication for browser-to-runtime communication
 - **Streaming execution** - real-time stdout/stderr with interrupt support
+- **MCP server** - any agent client can run code in a lab, through `agent-runtime mcp`
 - **Observability hooks** - structured events for monitoring and debugging
 
 ## Trust Model
@@ -239,20 +240,57 @@ await executeStreaming('my-session', 'for i in range(5): print(i)', (output) => 
 | `AGENT_RUNTIME_REQUIRE_PAIRING` | `true` | Require origin approval |
 | `AGENT_RUNTIME_DEBUG` | `false` | Enable debug mode with hot reload |
 
+## Agent Clients (MCP)
+
+Agent Runtime speaks the Model Context Protocol, so an agent client - Claude Code, Claude
+Desktop, Cursor - can run code in a learner's lab and read what came back: the real traceback,
+in the real environment. Install the extra and issue that client a token:
+
+```bash
+uv pip install 'agent-runtime[mcp]'
+agent-runtime token create "Claude Desktop" --scope code
+```
+
+The token is shown once. Put it in the client's own configuration:
+
+```json
+{
+  "mcpServers": {
+    "agent-runtime": {
+      "command": "agent-runtime",
+      "args": ["mcp"],
+      "env": { "AGENT_RUNTIME_TOKEN": "<the token>" }
+    }
+  }
+}
+```
+
+With `agent-runtime serve` running, the client gets a `run_python` tool: a persistent kernel per
+lab, figures returned as images, tracebacks returned as text to read rather than as errors.
+
+`agent-runtime token list` and `agent-runtime token revoke <name>` manage clients, and take
+effect without restarting the runtime. The default scope is `actions`, which can start only the
+named actions of labs you have approved; `--scope code` is what runs arbitrary Python, and is
+worth the same thought as letting that client type into your terminal.
+
+See [docs/mcp.md](docs/mcp.md) for the design and what comes next.
+
 ## API Overview
 
 ### Runtime Info
 
 ```
-GET /runtime/info
+GET /runtime/info    - version and capabilities
+GET /runtime/whoami  - who the runtime takes the caller to be, and its scope
 ```
 
-Returns:
+`/runtime/info` returns:
 ```json
 {
   "runtime_version": "0.1.0",
   "protocol_version": "2025-01",
-  "capabilities": ["python", "jupyter", "local_fs"]
+  "capabilities": ["python", "jupyter", "local_fs", "lab_actions", "pairing_scopes",
+                   "local_clients"]
 }
 ```
 
@@ -309,9 +347,10 @@ Configuration is stored in `~/.agent-runtime/`:
 
 ```
 ~/.agent-runtime/
-├── config.toml         # Runtime configuration
-├── paired_origins.json # Approved origins
-└── envs/               # Virtual environments
+├── config.toml          # Runtime configuration
+├── paired_origins.json  # Approved origins
+├── local_clients.json   # Tokens for local processes, such as an MCP client
+└── envs/                # Virtual environments
     └── lab-{id}/
         └── .venv/
 ```

@@ -4,6 +4,7 @@ import argparse
 import sys
 
 from agent_runtime import __version__
+from agent_runtime.auth import SCOPE_DESCRIPTIONS, SCOPES
 from agent_runtime.config import settings
 from agent_runtime.observability import setup_logging
 
@@ -93,6 +94,39 @@ def main() -> None:
     pairing_revoke = pairing_subparsers.add_parser("revoke", help="Revoke a paired origin")
     pairing_revoke.add_argument("origin", help="Origin to revoke")
 
+    # token commands: bearer tokens for local processes, which have no origin to pair
+    token_parser = subparsers.add_parser(
+        "token", help="Manage tokens for local clients, such as an MCP server"
+    )
+    token_subparsers = token_parser.add_subparsers(dest="token_command")
+
+    token_create = token_subparsers.add_parser("create", help="Issue a token to a local client")
+    token_create.add_argument("name", help="What to call this client, e.g. 'Claude Desktop'")
+    token_create.add_argument(
+        "--scope",
+        choices=SCOPES,
+        default="actions",
+        help="What the client may do (default: actions, which cannot run arbitrary code)",
+    )
+    token_subparsers.add_parser("list", help="List local clients")
+    token_revoke = token_subparsers.add_parser("revoke", help="Revoke a local client's token")
+    token_revoke.add_argument("name", help="The client to revoke")
+
+    # mcp command
+    mcp_parser = subparsers.add_parser(
+        "mcp", help="Run the MCP server on stdio, for an agent client to connect to"
+    )
+    mcp_parser.add_argument(
+        "--url",
+        default=None,
+        help="The runtime to talk to (default: $AGENT_RUNTIME_URL, else the local runtime)",
+    )
+    mcp_parser.add_argument(
+        "--token",
+        default=None,
+        help="Local client token (default: $AGENT_RUNTIME_TOKEN)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "serve":
@@ -101,6 +135,10 @@ def main() -> None:
         run_env(args)
     elif args.command == "pairing":
         run_pairing(args)
+    elif args.command == "token":
+        run_token(args)
+    elif args.command == "mcp":
+        run_mcp(args)
     elif args.command == "tls":
         run_tls(args)
     else:
@@ -297,6 +335,84 @@ def run_pairing(args: argparse.Namespace) -> None:
     else:
         print("Usage: agent-runtime pairing [list|revoke]")
         sys.exit(1)
+
+
+def run_token(args: argparse.Namespace) -> None:
+    """Handle token commands: bearer tokens for local processes."""
+    from agent_runtime.auth import create_local_token
+    from agent_runtime.local_tokens import local_tokens
+
+    if args.token_command == "create":
+        existed = any(client.name == args.name for client in local_tokens.list_clients())
+        try:
+            token = create_local_token(args.name, args.scope)
+        except ValueError as error:
+            print(error)
+            sys.exit(1)
+
+        if existed:
+            print(f"Replaced the token for {args.name!r}; the old one no longer works.")
+        print(f"Token for {args.name!r}, scope {args.scope}:")
+        print()
+        print(f"  {token}")
+        print()
+        print("This is the only time it is shown. It grants the right to")
+        print(f"{SCOPE_DESCRIPTIONS[args.scope]}.")
+        print()
+        print("For an MCP client, put it in that client's own configuration:")
+        print()
+        print('  "agent-runtime": {')
+        print('    "command": "agent-runtime",')
+        print('    "args": ["mcp"],')
+        print(f'    "env": {{"AGENT_RUNTIME_TOKEN": "{token}"}}')
+        print("  }")
+        if args.scope != "code":
+            print()
+            print("Note: running Python needs --scope code. This token can only start the")
+            print("named actions of labs you approve.")
+
+    elif args.token_command == "list":
+        clients = local_tokens.list_clients()
+        if not clients:
+            print("No local clients. Issue a token with 'agent-runtime token create <name>'.")
+            return
+
+        print("Local clients:")
+        for client in clients:
+            created = local_tokens.created_at(client.name)
+            when = f", created {created[:10]}" if created else ""
+            print(f"  - {client.name} (scope {client.scope}{when})")
+
+    elif args.token_command == "revoke":
+        if local_tokens.revoke(args.name):
+            print(f"Revoked the token for {args.name!r}")
+        else:
+            print(f"No local client named {args.name!r}")
+            sys.exit(1)
+
+    else:
+        print("Usage: agent-runtime token [create|list|revoke]")
+        sys.exit(1)
+
+
+def run_mcp(args: argparse.Namespace) -> None:
+    """Run the MCP server on stdio.
+
+    Started by an MCP client, not usually by hand: stdin and stdout carry the protocol.
+    """
+    import os
+
+    try:
+        from agent_runtime.mcp.server import serve
+    except ImportError as error:
+        print(
+            f"The MCP server needs the 'mcp' package ({error}). Install it with:\n"
+            "  uv pip install 'agent-runtime[mcp]'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    serve(base_url=args.url, token=args.token or os.environ.get("AGENT_RUNTIME_TOKEN"))
 
 
 if __name__ == "__main__":
