@@ -34,12 +34,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The MCP server (agent-runtime mcp); see docs/mcp.md. Optional: the runtime itself does not
+# need it, and a learner who only opens a course page never runs it.
+mcp = [
+    "mcp>=2.2.0",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=4.1.0",
     "ruff>=0.1.0",
     "mypy>=1.8.0",
+    "mcp>=2.2.0",
 ]
 
 [project.scripts]

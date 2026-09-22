@@ -53,6 +53,25 @@ that resolve to loopback are not included.
 Non-loopback pairing requires HTTPS; tokens are never issued to a remote
 plain-HTTP origin.
 
+### Local Clients
+
+A process on this machine - an MCP server, a script - sends no `Origin` header, so pairing has
+nothing to bind a token to and nothing to show the user. Such a client holds a token issued on
+the machine instead:
+
+```bash
+agent-runtime token create "Claude Desktop" --scope code
+```
+
+It sends that token as `Authorization: Bearer <token>` with no `Origin`, and gets the scope the
+token was created with. The two kinds of token are kept apart: a paired site's token is not a
+local client token, and a local client token sent *with* an `Origin` is rejected, because it is
+bound to no origin. Tokens are stored hashed in `<runtime dir>/local_clients.json` (mode `0600`)
+and can be listed and revoked with `agent-runtime token list` and `agent-runtime token revoke`,
+which take effect without restarting the runtime.
+
+See [mcp.md](mcp.md) for the MCP server that uses this.
+
 ## Endpoints
 
 ### Request Pairing
@@ -91,9 +110,32 @@ Returns runtime capabilities and version.
 {
   "runtime_version": "0.1.0",
   "protocol_version": "2025-01",
-  "capabilities": ["python", "jupyter", "local_fs"]
+  "capabilities": ["python", "jupyter", "local_fs", "lab_actions", "pairing_scopes",
+                   "local_clients"]
 }
 ```
+
+### Who Am I
+
+```
+GET /runtime/whoami
+Authorization: Bearer <token>
+```
+
+Who the runtime takes the caller to be, and what that principal may do. A client checks its
+token with this instead of discovering the answer when a call fails.
+
+**Response:**
+```json
+{
+  "principal": "local:Claude Desktop",
+  "scope": "code"
+}
+```
+
+`principal` is the browser origin, or `local:<name>` for a local client. It is `anonymous` only
+when the runtime was started with `--no-pairing`, which identifies nobody. Returns `401` without
+usable credentials and `403` for a token that does not match its origin.
 
 ### Health Check
 

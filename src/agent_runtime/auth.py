@@ -4,6 +4,7 @@ Handles:
 - Origin allowlist management
 - Pairing flow for new origins
 - Token-based authentication
+- Tokens for local processes, which have no origin to pair (see local_tokens.py)
 """
 
 import asyncio
@@ -18,6 +19,7 @@ from urllib.parse import urlsplit
 from fastapi import Header, HTTPException, Request
 
 from agent_runtime.config import settings
+from agent_runtime.local_tokens import local_tokens
 
 # What a paired origin may do. "code" runs any Python through kernels (/kernel, /cell) and
 # includes lab actions; "actions" only runs the named actions of labs the user approved (/labs).
@@ -227,33 +229,66 @@ def get_allowed_origins() -> list[str]:
     return pairing_manager.get_allowed_origins()
 
 
-async def _authenticate(request: Request, authorization: str | None) -> tuple[str, str]:
-    """Return the request's origin and the scope it holds, or raise 401/403."""
-    origin = request.headers.get("origin", "")
+def create_local_token(name: str, scope: str) -> str:
+    """Issue a token to a local process. Returns the plaintext, which is not stored."""
+    if scope not in SCOPES:
+        raise ValueError(f"scope must be one of {', '.join(SCOPES)}")
+    return local_tokens.create(name, scope)
 
-    if not settings.require_pairing:
-        return origin, "code"
 
-    if is_loopback_origin(origin):
-        return origin, "code"
-
-    # Require authorization header
+def _bearer(authorization: str | None) -> str:
+    """The token from an Authorization header, or raise 401."""
     if not authorization:
         raise HTTPException(
             status_code=401,
             detail="Authorization header required",
         )
 
-    # Parse Bearer token
     if not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=401,
             detail="Invalid authorization format. Use: Bearer <token>",
         )
 
-    token = authorization[7:]
+    return authorization[7:]
 
-    if not pairing_manager.validate_token(token, origin):
+
+async def _authenticate(request: Request, authorization: str | None) -> tuple[str, str]:
+    """Return the caller's principal and the scope it holds, or raise 401/403.
+
+    A principal is a browser origin, or `local:<name>` for a process on this machine.
+    """
+    origin = request.headers.get("origin", "")
+
+    if not settings.require_pairing:
+        return origin, "code"
+
+    if origin:
+        return _authenticate_origin(origin, authorization)
+
+    # No Origin header, so not a browser: a process on this machine, holding a token this
+    # machine issued. The two kinds of token live in separate stores and are looked up on
+    # separate branches, so a paired site's token is not a local client token, and a local
+    # client token sent with an Origin takes the branch above and fails there - it is bound
+    # to no origin. See local_tokens.py.
+    client = local_tokens.lookup(_bearer(authorization))
+    if client is None:
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "Unknown local client token. Issue one with 'agent-runtime token create <name>'."
+            ),
+        )
+
+    return f"local:{client.name}", client.scope
+
+
+def _authenticate_origin(origin: str, authorization: str | None) -> tuple[str, str]:
+    """Authenticate a browser origin: loopback is trusted, anything else needs its token."""
+    if is_loopback_origin(origin):
+        return origin, "code"
+
+    if not pairing_manager.validate_token(_bearer(authorization), origin):
         raise HTTPException(
             status_code=403,
             detail="Invalid or expired token",
@@ -268,21 +303,29 @@ async def require_auth(
 ) -> str:
     """Dependency for code execution (kernels, cells): requires the "code" scope.
 
-    Returns the validated origin.
+    Returns the validated principal.
     """
-    origin, scope = await _authenticate(request, authorization)
+    principal, scope = await _authenticate(request, authorization)
     if scope != "code":
         raise HTTPException(
             status_code=403,
-            detail=f"This origin is paired for '{scope}' only; running code needs 'code'",
+            detail=f"This client is paired for '{scope}' only; running code needs 'code'",
         )
-    return origin
+    return principal
 
 
 async def require_lab_auth(
     request: Request,
     authorization: str | None = Header(None),
 ) -> str:
-    """Dependency for lab actions (/labs): either scope. Returns the validated origin."""
-    origin, _scope = await _authenticate(request, authorization)
-    return origin
+    """Dependency for lab actions (/labs): either scope. Returns the validated principal."""
+    principal, _scope = await _authenticate(request, authorization)
+    return principal
+
+
+async def require_identity(
+    request: Request,
+    authorization: str | None = Header(None),
+) -> tuple[str, str]:
+    """Dependency for /runtime/whoami: the caller's principal and scope, under either scope."""
+    return await _authenticate(request, authorization)

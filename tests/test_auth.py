@@ -252,3 +252,100 @@ class TestRequireAuth:
 
         assert exc_info.value.status_code == 401
         assert "Bearer" in exc_info.value.detail
+
+
+class TestLocalClientAuth:
+    """A process on this machine sends no Origin; it holds a token this machine issued."""
+
+    @staticmethod
+    def _request(origin: str | None = None):
+        from fastapi import Request
+
+        request = MagicMock(spec=Request)
+        request.headers = {"origin": origin} if origin else {}
+        return request
+
+    @staticmethod
+    def _store(client=None):
+        store = MagicMock()
+        store.lookup.return_value = client
+        return store
+
+    @pytest.mark.asyncio
+    async def test_a_local_token_names_a_principal_and_its_scope(self):
+        from agent_runtime.auth import _authenticate
+        from agent_runtime.local_tokens import LocalClient
+
+        store = self._store(LocalClient(name="Claude Desktop", scope="code"))
+        with patch("agent_runtime.auth.settings") as mock_settings:
+            mock_settings.require_pairing = True
+            with patch("agent_runtime.auth.local_tokens", store):
+                principal, scope = await _authenticate(self._request(), "Bearer abc")
+
+        assert principal == "local:Claude Desktop"
+        assert scope == "code"
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_local_token_is_refused(self):
+        from fastapi import HTTPException
+
+        from agent_runtime.auth import _authenticate
+
+        with patch("agent_runtime.auth.settings") as mock_settings:
+            mock_settings.require_pairing = True
+            with patch("agent_runtime.auth.local_tokens", self._store(None)):
+                with pytest.raises(HTTPException) as error:
+                    await _authenticate(self._request(), "Bearer abc")
+
+        assert error.value.status_code == 401
+        assert "token create" in error.value.detail
+
+    @pytest.mark.asyncio
+    async def test_a_process_without_a_token_is_refused(self):
+        from fastapi import HTTPException
+
+        from agent_runtime.auth import _authenticate
+
+        with patch("agent_runtime.auth.settings") as mock_settings:
+            mock_settings.require_pairing = True
+            with patch("agent_runtime.auth.local_tokens", self._store(None)):
+                with pytest.raises(HTTPException) as error:
+                    await _authenticate(self._request(), None)
+
+        assert error.value.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_a_local_token_is_not_usable_from_a_page(self):
+        """It is bound to no origin, so a request carrying one takes the browser branch."""
+        from fastapi import HTTPException
+
+        from agent_runtime.auth import _authenticate
+        from agent_runtime.local_tokens import LocalClient
+
+        store = self._store(LocalClient(name="tutor", scope="code"))
+        with patch("agent_runtime.auth.settings") as mock_settings:
+            mock_settings.require_pairing = True
+            with patch("agent_runtime.auth.local_tokens", store):
+                with pytest.raises(HTTPException) as error:
+                    await _authenticate(self._request("https://example.com"), "Bearer abc")
+
+        assert error.value.status_code == 403
+        store.lookup.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_actions_client_may_not_run_code(self):
+        from fastapi import HTTPException
+
+        from agent_runtime.auth import require_auth, require_lab_auth
+        from agent_runtime.local_tokens import LocalClient
+
+        store = self._store(LocalClient(name="tutor", scope="actions"))
+        with patch("agent_runtime.auth.settings") as mock_settings:
+            mock_settings.require_pairing = True
+            with patch("agent_runtime.auth.local_tokens", store):
+                assert await require_lab_auth(self._request(), "Bearer abc") == "local:tutor"
+                with pytest.raises(HTTPException) as error:
+                    await require_auth(self._request(), "Bearer abc")
+
+        assert error.value.status_code == 403
+        assert "code" in error.value.detail

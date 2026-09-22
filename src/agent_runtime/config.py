@@ -86,6 +86,11 @@ class Settings(BaseSettings):
         """Path to the paired origins file."""
         return self.runtime_dir / "paired_origins.json"
 
+    @property
+    def local_clients_file(self) -> Path:
+        """Tokens issued to local processes that are not browser origins (see local_tokens.py)."""
+        return self.runtime_dir / "local_clients.json"
+
     def ensure_dirs(self) -> None:
         """Ensure all required directories exist."""
         self.runtime_dir.mkdir(parents=True, exist_ok=True)

@@ -3,12 +3,13 @@
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from agent_runtime import __protocol_version__, __version__
 from agent_runtime import labs as lab_runtime
 from agent_runtime.api import execute, health, kernel, labs, pairing
+from agent_runtime.auth import require_identity
 from agent_runtime.config import settings
 from agent_runtime.kernels.manager import kernel_manager
 
@@ -68,8 +69,27 @@ async def runtime_info() -> dict[str, object]:
     return {
         "runtime_version": __version__,
         "protocol_version": __protocol_version__,
-        "capabilities": ["python", "jupyter", "local_fs", "lab_actions", "pairing_scopes"],
+        "capabilities": [
+            "python",
+            "jupyter",
+            "local_fs",
+            "lab_actions",
+            "pairing_scopes",
+            "local_clients",
+        ],
     }
+
+
+@app.get("/runtime/whoami")
+async def whoami(identity: tuple[str, str] = Depends(require_identity)) -> dict[str, str]:
+    """Who the runtime takes the caller to be, and what that principal may do.
+
+    A client uses this to check its token and to report the scope it holds before a call
+    fails on one.
+    """
+    principal, scope = identity
+    # An empty principal means nobody was identified, which only happens under --no-pairing.
+    return {"principal": principal or "anonymous", "scope": scope}
 
 
 def main() -> None:
